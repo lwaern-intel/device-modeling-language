@@ -78,12 +78,14 @@ header %{
         const int y;
     } deep_const_t;
     static deep_const_t dc_val[2] = {{00,01},{10,11}};
+    static const int sc_val = 4;
 %}
 extern typedef struct {
     int x;
     const int y;
 } deep_const_t;
 extern deep_const_t dc_val[2];
+extern const int sc_val;
 template deep_const {
     param val : deep_const_t;
     shared method test(int i) {
@@ -91,8 +93,18 @@ template deep_const {
         assert val.y == i * 10 + 1;
     }
 }
-group  dc[i<2] is deep_const {
+template shallow_const {
+    param val : const int;
+    shared method test() {
+        assert val == 4;
+    }
+}
+group dc[i<2] is deep_const {
     param val = dc_val[i];
+}
+
+group sc is shallow_const {
+    param val = sc_val;
 }
 
 method test() throws {
@@ -129,4 +141,5 @@ method test() throws {
 
     dc[0].test(0);
     dc[1].test(1);
+    sc.test();
 }

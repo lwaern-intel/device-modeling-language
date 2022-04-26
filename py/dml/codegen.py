@@ -292,11 +292,16 @@ class MemoizedReturnExit(ExitHandler):
         stmts.append(codegen_return(site, self.outp, self.throws, targets))
         return mkCompound(site, stmts)
 
-class Memoization:
+class Memoization(metaclass=ABCMeta):
+    @abstractmethod
     def prelude(self):
         pass
+
+    @abstractmethod
     def exit_handler(self):
         pass
+
+    @abstractmethod
     def fail_handler(self):
         pass
 
@@ -353,20 +358,33 @@ class SharedIndependentMemoized(Memoization):
                 if self.method.throws else NoFailure(self.method.site))
 
 def memoization_common_prelude(name, site, outp, throws, mkRef):
-    stmts = []
+    has_run_stmts = []
+    # Throwing is treated as a special kind of output parameter, stored through
+    # 'threw'. When 'ran' indicates the method has been called before to
+    # completion, 'threw' is retrieved to check whether the method threw or
+    # not. If it did, then the call completes by throwing again; otherwise, the
+    # cached return values are retrieved and returned.
     if throws:
-        stmts.append(
+        has_run_stmts.append(
             mkIf(site, mkRef('threw', TBool()),
                  mkReturn(site, mkBoolConstant(site, True))))
-    stmts.append(
+    has_run_stmts.append(
         codegen_return(site, outp, throws,
                        [mkRef(f'p_{pname}', ptype)
                         for (pname, ptype) in outp]))
+    # 'ran' is used to check whether the function has been called or not:
+    # - 0:  never been called before. Set to -1, and execute the body.
+    #       Before any return, cache the results, and set 'ran' to 1.
+    # - 1:  called to completion before. Fetch the cached results and return
+    #       immediately without executing the rest of the body.
+    # - -1: called before, but not to completion. This only happens due to an
+    #       (indirect) recursive call. Raise critical error, and then proceed
+    #       as though ran == 0. Hopefully things will turn out ok.
     ran = mkRef('ran', TInt(8, True))
     unrun   = [mkCase(site, mkIntegerLiteral(site, 0)),
                mkCopyData(site, mkIntegerConstant(site, -1, True), ran),
                mkBreak(site)]
-    has_run = [mkCase(site, mkIntegerLiteral(site, 1))] + stmts
+    has_run = [mkCase(site, mkIntegerLiteral(site, 1))] + has_run_stmts
     running = [mkDefault(site),
                mkInline(site, f'_memoized_recursion("{name}");')]
     return [mkSwitch(site,

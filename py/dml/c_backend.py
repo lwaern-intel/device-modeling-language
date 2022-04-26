@@ -5,7 +5,7 @@ import sys, os
 import itertools
 import operator
 import re
-from contextlib import ExitStack, nullcontext
+from contextlib import nullcontext
 from functools import reduce
 
 from . import objects, logging, crep, output, ctree, serialize, structure
@@ -406,10 +406,7 @@ def generate_attr_setter(fname, node, port, dimsizes, cprefix, loopvars,
         out('attr_value_t attr%d = %s;\n' % (dim, list_item))
         valuevar = 'attr%d' % (dim,)
 
-    with ExitStack() as stack:
-        stack.enter_context(NoFailure(node.site))
-        stack.enter_context(crep.DeviceInstanceContext())
-
+    with NoFailure(node.site), crep.DeviceInstanceContext():
         setcode = [
             codegen_inline_byname(
                 node, port_indices + loopvars,
@@ -472,10 +469,7 @@ def generate_attr_getter(fname, node, port, dimsizes, cprefix, loopvars):
         out('attr_value_t %s;\n' % (next_valuevar.read()))
         valuevar = next_valuevar
 
-    with ExitStack() as stack:
-        stack.enter_context(NoFailure(node.site))
-        stack.enter_context(crep.DeviceInstanceContext())
-
+    with NoFailure(node.site), crep.DeviceInstanceContext():
         getcode = codegen_inline_byname(
             node, port_indices + loopvars,
             '_get_attribute' if dml.globals.dml_version == (1, 2)
@@ -1038,10 +1032,7 @@ def generate_simple_events(device):
                         for i in range(method.dimensions))
         params = tuple(mkLit(site, f'_args->{pname}', ptype)
                        for (pname, ptype) in method.inp)
-        with ExitStack() as stack:
-            stack.enter_context(LogFailure(site, method, indices))
-            stack.enter_context(crep.DeviceInstanceContext())
-
+        with LogFailure(site, method, indices), crep.DeviceInstanceContext():
             code = codegen_call(site, method, indices, params, ())
         code = mkCompound(site, [code])
         code.toc()
@@ -1182,9 +1173,7 @@ def generate_reg_callback(meth, name):
     out('%s *_dev = _obj;\n' % dev_t)
     scope = Symtab(global_scope)
     fail = ReturnFailure(meth.site)
-    with ExitStack() as stack:
-        stack.enter_context(fail)
-        stack.enter_context(crep.DeviceInstanceContext())
+    with fail, crep.DeviceInstanceContext():
         inargs = [mkLit(meth.site, n, t) for n, t in meth.inp]
         outargs = [mkLit(meth.site, "*" + n, t) for n, t in meth.outp]
         code = [codegen_call(
@@ -1470,10 +1459,7 @@ def generate_reset(device, hardness):
     out(crep.structtype(device) + ' *_dev UNUSED = ('
         + crep.structtype(device) + ' *)_obj;\n\n')
     scope = Symtab(global_scope)
-    with ExitStack() as stack:
-        stack.enter_context(LogFailure(device.site, device, ()))
-        stack.enter_context(crep.DeviceInstanceContext())
-
+    with LogFailure(device.site, device, ()), crep.DeviceInstanceContext():
         code = codegen_call_byname(device.site, device, (),
                                    hardness+'_reset', [], [])
     code = mkCompound(device.site, declarations(scope) + [code])
@@ -2311,38 +2297,38 @@ def generate_alloc_trait_vtables(node):
     out('}\n', preindent=-1)
     splitting_point()
 
-def generate_startup_calls(devnode):
+def generate_startup_call_loops(startup_methods):
+    by_dims = {}
+    for (method_data_tuple, dims) in startup_methods:
+        by_dims.setdefault(dims, []).append(method_data_tuple)
+    all_dims = sorted(by_dims)
+    prev_dims = ()
+    for dims in all_dims:
+        for (site, gen_call, data) in by_dims[dims]:
+            common_dims = []
+            for (a, b) in zip(dims, prev_dims):
+                if a == b:
+                    common_dims.append(a)
+                else:
+                    break
+            for _ in range(len(common_dims), len(prev_dims)):
+                out('}\n', preindent=-1)
+            for i in range(len(common_dims), len(dims)):
+                idxvar = '_i%d' % (i,)
+                out('for (uint32 %s = 0; %s < %d; %s++) {\n'
+                    % (idxvar, idxvar, dims[i], idxvar),
+                    postindent=1)
+            prev_dims = dims
+
+            idxvars = ['_i%d' % (i,) for i in range(len(dims))]
+            gen_call(data, idxvars)
+
+    for _ in prev_dims:
+        out('}\n', preindent=-1)
+
+def generate_startup_calls_entry_function(devnode):
     start_function_definition('void _startup_calls(void)')
     out('{\n', postindent=1)
-
-    def startup_calls(startup_methods):
-        by_dims = {}
-        for (method_data_tuple, dims) in startup_methods:
-            by_dims.setdefault(dims, []).append(method_data_tuple)
-        all_dims = sorted(by_dims)
-        prev_dims = ()
-        for dims in all_dims:
-            for (site, gen_call, data) in by_dims[dims]:
-                common_dims = []
-                for (a, b) in zip(dims, prev_dims):
-                    if a == b:
-                        common_dims.append(a)
-                    else:
-                        break
-                for _ in range(len(common_dims), len(prev_dims)):
-                    out('}\n', preindent=-1)
-                for i in range(len(common_dims), len(dims)):
-                    idxvar = '_i%d' % (i,)
-                    out('for (uint32 %s = 0; %s < %d; %s++) {\n'
-                        % (idxvar, idxvar, dims[i], idxvar),
-                        postindent=1)
-                prev_dims = dims
-
-                idxvars = ['_i%d' % (i,) for i in range(len(dims))]
-                gen_call(data, idxvars)
-
-        for _ in prev_dims:
-            out('}\n', preindent=-1)
 
     def generate_regular_call(method, idxvars):
         site = method.site
@@ -2353,6 +2339,10 @@ def generate_startup_calls(devnode):
                               .declaration('')),)),
                          t)
                    for (_, t) in method.outp]
+        # startup memoized methods can throw, which is ignored during startup.
+        # Memoization of the throw then allows for the user to check whether
+        # or not the method did throw during startup by calling the method
+        # again.
         with IgnoreFailure(site):
             codegen_call(method.site, method, indices, [], outargs).toc()
 
@@ -2416,7 +2406,7 @@ def generate_startup_calls(devnode):
              node.dimsizes)
             for (node, startups) in trait_memoized_startups])
     for startups in (all_startups, all_memoized_startups):
-        startup_calls(startups)
+        generate_startup_call_loops(startups)
     out('}\n', preindent=-1)
 
 def generate_init_trait_vtables(node, param_values):
@@ -2605,7 +2595,7 @@ def generate_cfile_body(device, footers, full_module, filename_prefix):
     generate_dealloc(device)
     generate_events(device)
     generate_identity_data_decls()
-    generate_startup_calls(device)
+    generate_startup_calls_entry_function(device)
     if dml.globals.dml_version == (1, 2):
         generate_reset(device, 'hard')
         generate_reset(device, 'soft')

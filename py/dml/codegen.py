@@ -245,9 +245,9 @@ class ReturnExit(ExitHandler):
         assert retvals is not None, 'dml 1.2/1.4 mixup'
         return codegen_return(site, self.outp, self.throws, retvals)
 
-def memoized_return_failure_leave(site, mkRef, failed):
-    ran = mkRef('ran', TInt(8, True))
-    threw = mkRef('threw', TBool())
+def memoized_return_failure_leave(site, make_ref, failed):
+    ran = make_ref('ran', TInt(8, True))
+    threw = make_ref('threw', TBool())
     stmts = [mkCopyData(site, mkIntegerLiteral(site, 1), ran),
              mkCopyData(site, mkBoolConstant(site, failed), threw),
              mkReturn(site, mkBoolConstant(site, failed))]
@@ -257,36 +257,36 @@ class MemoizedReturnFailure(Failure):
     '''Generate boolean return statements to signal success. False
     means success.'''
 
-    def __init__(self, site, mkRef):
+    def __init__(self, site, make_ref):
         self.site = site
-        self.mkRef = mkRef
+        self.make_ref = make_ref
 
     def fail(self, site):
         return mkCompound(
             site,
-            memoized_return_failure_leave(site, self.mkRef, True))
+            memoized_return_failure_leave(site, self.make_ref, True))
     def nofail(self):
         '''Return code that is used to leave the method successfully'''
         return mkCompound(
             self.site,
-            memoized_return_failure_leave(self.site, self.mkRef, False))
+            memoized_return_failure_leave(self.site, self.make_ref, False))
 
 class MemoizedReturnExit(ExitHandler):
-    def __init__(self, site, outp, throws, mkRef):
+    def __init__(self, site, outp, throws, make_ref):
         self.site = site
         self.outp = outp
         self.throws = throws
-        self.mkRef = mkRef
+        self.make_ref = make_ref
 
     def codegen_exit(self, site, retvals):
-        ran = self.mkRef('ran', TInt(8, True))
+        ran = self.make_ref('ran', TInt(8, True))
         stmts = [mkCopyData(site, mkIntegerLiteral(site, 1), ran)]
         if self.throws:
-            threw = self.mkRef('threw', TBool())
+            threw = self.make_ref('threw', TBool())
             stmts.append(mkCopyData(site, mkBoolConstant(site, False), threw))
         targets = []
         for ((name, typ), val) in zip(self.outp, retvals):
-            target = self.mkRef(f'p_{name}', typ)
+            target = self.make_ref(f'p_{name}', typ)
             stmts.append(mkCopyData(site, val, target))
             targets.append(target)
         stmts.append(codegen_return(site, self.outp, self.throws, targets))
@@ -311,7 +311,7 @@ class IndependentMemoized(Memoization):
         self.func = func
         self.method = func.method
 
-    def mkRef(self, ref, typ):
+    def make_ref(self, ref, typ):
         indexing = ''.join([f'[_idx{i}]'
                             for i in range(self.method.dimensions)])
         return mkLit(self.method.site, f'_memo{indexing}.{ref}', typ)
@@ -329,19 +329,19 @@ class IndependentMemoized(Memoization):
             f'static struct {{{struct_body}}} _memo{array_defs};')
         return [struct_var_def] + memoization_common_prelude(
             self.method.logname_anonymized(), self.method.site, self.func.outp,
-            self.func.throws, self.mkRef)
+            self.func.throws, self.make_ref)
     def exit_handler(self):
         return MemoizedReturnExit(self.method.site, self.func.outp,
-                                  self.func.throws, self.mkRef)
+                                  self.func.throws, self.make_ref)
     def fail_handler(self):
-        return (MemoizedReturnFailure(self.method.rbrace_site, self.mkRef)
+        return (MemoizedReturnFailure(self.method.rbrace_site, self.make_ref)
                 if self.func.throws else NoFailure(self.method.site))
 
 class SharedIndependentMemoized(Memoization):
     def __init__(self, method):
         assert method.independent
         self.method = method
-    def mkRef(self, ref, typ):
+    def make_ref(self, ref, typ):
         traitname = cident(self.method.trait.name)
         return mkLit(self.method.site,
                      f'((struct _{traitname} *) _{traitname}.trait)'
@@ -349,15 +349,15 @@ class SharedIndependentMemoized(Memoization):
     def prelude(self):
         return memoization_common_prelude(
             self.method.name, self.method.site, self.method.outp,
-            self.method.throws, self.mkRef)
+            self.method.throws, self.make_ref)
     def exit_handler(self):
         return MemoizedReturnExit(self.method.site, self.method.outp,
-                                  self.method.throws, self.mkRef)
+                                  self.method.throws, self.make_ref)
     def fail_handler(self):
-        return (MemoizedReturnFailure(self.method.rbrace_site, self.mkRef)
+        return (MemoizedReturnFailure(self.method.rbrace_site, self.make_ref)
                 if self.method.throws else NoFailure(self.method.site))
 
-def memoization_common_prelude(name, site, outp, throws, mkRef):
+def memoization_common_prelude(name, site, outp, throws, make_ref):
     has_run_stmts = []
     # Throwing is treated as a special kind of output parameter, stored through
     # 'threw'. When 'ran' indicates the method has been called before to
@@ -366,11 +366,11 @@ def memoization_common_prelude(name, site, outp, throws, mkRef):
     # cached return values are retrieved and returned.
     if throws:
         has_run_stmts.append(
-            mkIf(site, mkRef('threw', TBool()),
+            mkIf(site, make_ref('threw', TBool()),
                  mkReturn(site, mkBoolConstant(site, True))))
     has_run_stmts.append(
         codegen_return(site, outp, throws,
-                       [mkRef(f'p_{pname}', ptype)
+                       [make_ref(f'p_{pname}', ptype)
                         for (pname, ptype) in outp]))
     # 'ran' is used to check whether the function has been called or not:
     # - 0:  never been called before. Set to -1, and execute the body.
@@ -380,7 +380,7 @@ def memoization_common_prelude(name, site, outp, throws, mkRef):
     # - -1: called before, but not to completion. This only happens due to an
     #       (indirect) recursive call. Raise critical error, and then proceed
     #       as though ran == 0. Hopefully things will turn out ok.
-    ran = mkRef('ran', TInt(8, True))
+    ran = make_ref('ran', TInt(8, True))
     unrun   = [mkCase(site, mkIntegerLiteral(site, 0)),
                mkCopyData(site, mkIntegerConstant(site, -1, True), ran),
                mkBreak(site)]
@@ -388,8 +388,8 @@ def memoization_common_prelude(name, site, outp, throws, mkRef):
     running = [mkDefault(site),
                mkInline(site, f'_memoized_recursion("{name}");')]
     return [mkSwitch(site,
-                 mkRef('ran', TInt(8, True)),
-                 mkCompound(site, unrun + has_run + running))]
+                     make_ref('ran', TInt(8, True)),
+                     mkCompound(site, unrun + has_run + running))]
 
 
 def declarations(scope):

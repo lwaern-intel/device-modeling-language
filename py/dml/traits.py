@@ -653,15 +653,14 @@ class Trait(SubTrait):
         s = Symtab(global_scope)
         selfref = mkLit(self.site, '_' + cident(self.name), self.type())
         for name in self.members():
-            # HACK the dumbness of this speaks for itself.
-            # One way to address this hack is to add a symbol class with a
-            # deferred-calculated expression.
+            # This is very hacky, but works well
             try:
-                s.add(ExpressionSymbol(
-                    name, mkSubRef(self.site, selfref, name, '.'), self.site))
+                symbol = ExpressionSymbol(
+                    name, mkSubRef(self.site, selfref, name, '.'), self.site)
             except EINDEPENDENTVIOL:
-                s.add(InvalidExpressionSymbol(name, EINDEPENDENTVIOL,
-                                              self.site))
+                symbol = InvalidExpressionSymbol(name, EINDEPENDENTVIOL,
+                                                 self.site)
+            s.add(symbol)
         # grammar prohibits name collision on 'this'
         s.add(ExpressionSymbol('this', selfref, self.site))
         return s

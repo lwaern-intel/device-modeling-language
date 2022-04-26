@@ -2301,30 +2301,18 @@ def generate_startup_call_loops(startup_methods):
     by_dims = {}
     for (method_data_tuple, dims) in startup_methods:
         by_dims.setdefault(dims, []).append(method_data_tuple)
-    all_dims = sorted(by_dims)
-    prev_dims = ()
-    for dims in all_dims:
-        for (site, gen_call, data) in by_dims[dims]:
-            common_dims = []
-            for (a, b) in zip(dims, prev_dims):
-                if a == b:
-                    common_dims.append(a)
-                else:
-                    break
-            for _ in range(len(common_dims), len(prev_dims)):
-                out('}\n', preindent=-1)
-            for i in range(len(common_dims), len(dims)):
-                idxvar = '_i%d' % (i,)
-                out('for (uint32 %s = 0; %s < %d; %s++) {\n'
-                    % (idxvar, idxvar, dims[i], idxvar),
-                    postindent=1)
-            prev_dims = dims
+    for dims in by_dims:
+        for i in range(len(dims)):
+            idxvar = '_i%d' % (i,)
+            out('for (uint32 %s = 0; %s < %d; %s++) {\n'
+                % (idxvar, idxvar, dims[i], idxvar), postindent=1)
 
+        for (site, gen_call, data) in by_dims[dims]:
             idxvars = ['_i%d' % (i,) for i in range(len(dims))]
             gen_call(data, idxvars)
 
-    for _ in prev_dims:
-        out('}\n', preindent=-1)
+        for i in range(len(dims)):
+            out('}\n', preindent=-1)
 
 def generate_startup_calls_entry_function(devnode):
     start_function_definition('void _startup_calls(void)')

@@ -28,7 +28,7 @@ __all__ = (
 
 
 class DeviceInstanceContext:
-    '''Context signifying that the device instance is accessible for any
+    '''Signifies that the device instance is accessible for any
     generated statements, and is retrievable through the '_dev' identifier.
     '''
     active = False
@@ -40,7 +40,7 @@ class DeviceInstanceContext:
         DeviceInstanceContext.active = self.prev_context
 
 class TypedParamContext:
-    '''Context signifying that expressions are being generated as part of the
+    '''Signifies that expressions are being generated as part of the
     definition of a typed parameter, and are thus subject to the restrictions
     placed upon typed parameter definitions.
     '''

@@ -129,6 +129,7 @@ __all__ = (
     'mkEachIn', 'EachIn',
     'mkBoolConstant',
     'mkUndefined', 'Undefined',
+    'mkDiscardRef',
     'TraitParameter',
     'TraitSessionRef',
     'TraitHookRef',
@@ -1100,14 +1101,21 @@ def mkAssignStatement(site, target, init):
     if not target.writable:
         raise EASSIGN(site, target)
 
-    target_type = target.ctype()
+    if isinstance(target, NonValue):
+        if not isinstance(init, ExpressionInitializer):
+            raise EDATAINIT(target.site,
+                            f'{target} can only be used as the target of an '
+                            + 'assignment if its initializer is a simple '
+                            + 'expression or a return value of a method call')
+    else:
+        target_type = target.ctype()
 
-    if deep_const(target_type):
-        raise ECONST(site)
+        if deep_const(target_type):
+            raise ECONST(site)
 
-    if isinstance(init, ExpressionInitializer):
-        init = ExpressionInitializer(
-            source_for_assignment(site, target_type, init.expr))
+        if isinstance(init, ExpressionInitializer):
+            init = ExpressionInitializer(
+                source_for_assignment(site, target_type, init.expr))
 
     return AssignStatement(site, target, init)
 
@@ -2514,7 +2522,7 @@ class AssignOp(BinOp):
     def __str__(self):
         return "%s = %s" % (self.lh, self.rh)
 
-    def discard(self):
+    def discard(self, explicit=False):
         return self.lh.write(ExpressionInitializer(self.rh))
 
     def read(self):
@@ -3538,6 +3546,18 @@ class Undefined(NonValue):
         return EUNDEF(self)
 
 mkUndefined = Undefined
+
+class DiscardRef(NonValue):
+    writable = True
+
+    def __str__(self):
+        return '_'
+
+    def write(self, source):
+        assert isinstance(source, ExpressionInitializer)
+        return source.expr.discard(explicit=True)
+
+mkDiscardRef = DiscardRef
 
 def endian_convert_expr(site, idx, endian, size):
     """Convert a bit index to little-endian (lsb=0) numbering.
@@ -4758,8 +4778,8 @@ class RValue(Expression):
         return self.expr.ctype()
     def read(self):
         return self.expr.read()
-    def discard(self):
-        return self.expr.discard()
+    def discard(self, explicit=False):
+        return self.expr.discard(explicit)
     def incref(self):
         self.expr.incref()
     def decref(self):
@@ -4959,7 +4979,7 @@ class ExpressionInitializer(Initializer):
         rt = safe_realtype_shallow(typ)
         # There is a reasonable implementation for this case (memcpy), but it
         # never occurs today
-        assert not isinstance(typ, TArray)
+        assert not isinstance(rt, TArray)
         if isinstance(rt, TEndianInt):
             return (f'{rt.dmllib_fun("copy")}((void *)&{dest},'
                     + f' {self.expr.read()})')
@@ -4967,7 +4987,7 @@ class ExpressionInitializer(Initializer):
             shallow_deconst_typ = safe_realtype_unconst(typ)
             # a const-qualified ExternStruct can be leveraged by the user as a
             # sign that there is some const-qualified member unknown to DMLC
-            if (isinstance(typ, TExternStruct)
+            if (isinstance(shallow_deconst_typ, TExternStruct)
                 or deep_const(shallow_deconst_typ)):
                 # Expression statement to delimit lifetime of compound literal
                 # TODO it's possible to improve the efficiency of this by not

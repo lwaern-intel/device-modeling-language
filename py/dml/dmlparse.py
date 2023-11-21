@@ -1759,6 +1759,11 @@ def expression_ident(t):
     t[0] = ast.variable(site(t), t[1])
 
 @prod_dml14
+def expression_discardref(t):
+    '''expression : _'''
+    t[0] = ast.discardref(site(t))
+
+@prod_dml14
 def expression_this(t):
     '''expression : THIS'''
     t[0] = ast.variable(site(t), t[1])

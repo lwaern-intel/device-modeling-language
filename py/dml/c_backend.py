@@ -720,7 +720,15 @@ def wrap_method(meth, wrapper_name, indices=()):
     is a port object
     """
 
-    inparams = [t.declaration(p) for p, t in meth.inp]
+    inp = list(meth.inp)
+    if meth.astcode.site.dml_version() != (1, 2):
+        discarded = 0
+        for (i, (n, t)) in enumerate(inp):
+            if n == '_':
+                inp[i] = (f'_unused_{discarded}', t)
+                discarded += 1
+    inparams = [t.declaration(p) + ' UNUSED'*(p.startswith('_unused_'))
+                for p, t in inp]
     if not meth.outp:
         retvar = None
         rettype = TVoid()

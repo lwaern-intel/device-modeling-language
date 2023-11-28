@@ -208,10 +208,17 @@ class TraitMethod(TraitVTableItem):
 
     def declaration(self):
         implicit_inargs = self.vtable_trait.implicit_args()
+        inp = list(self.inp)
+        discarded = 0
+        for (i, (n, t)) in enumerate(inp):
+            if n == '_':
+                inp[i] = (f'_unused_{discarded}', t)
+                discarded += 1
         args = ", ".join(t.declaration(n)
+                         + ' UNUSED'*(n.startswith('_unused_'))
                          for (n, t) in c_inargs(
                                  crep.maybe_dev_arg(self.independent)
-                                 + implicit_inargs + list(self.inp),
+                                 + implicit_inargs + inp,
                                  self.outp, self.throws))
         return c_rettype(self.outp, self.throws).declaration(
             '%s(%s)' % (self.cname(), args))

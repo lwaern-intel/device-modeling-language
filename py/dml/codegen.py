@@ -952,7 +952,7 @@ def declarations(scope):
         if sym.stmt:
             continue
         decl = sym_declaration(sym)
-        if decl:
+        if not decl.is_empty:
             decls.append(decl)
 
     return decls
@@ -2036,11 +2036,11 @@ def stmt_local(stmt, location, scope):
                                                    tgts, location, scope)
         if method_invocation is not None and stmt.site.dml_version != (1, 2):
             for sym in syms_to_add:
-                scope.add(sym)
+                if sym.name != '_':
+                    scope.add(sym)
             stmts.extend(sym_declaration(sym) for sym in tgt_syms)
             stmts.append(method_invocation)
-            stmts.extend(sym_declaration(sym)
-                         for sym in late_declared_syms)
+            stmts.extend(sym_declaration(sym) for sym in late_declared_syms)
         else:
             if len(tgts) != 1:
                 report(ERETLVALS(stmt.site, 1, len(tgts)))
@@ -2048,7 +2048,8 @@ def stmt_local(stmt, location, scope):
                 sym = syms_to_add[0]
                 sym.init = ExpressionInitializer(
                     codegen_expression(inits[0].args[0], location, scope))
-                scope.add(sym)
+                if not (sym.name == '_' and stmt.site.dml_version() != (1, 2)):
+                    scope.add(sym)
                 stmts.append(sym_declaration(sym))
     else:
         # Initializer evaluation and variable declarations are done in separate
@@ -2057,9 +2058,13 @@ def stmt_local(stmt, location, scope):
         inits = [get_initializer(stmt.site, typ, init, location, scope)
                  for ((_, typ), init) in zip(decls, inits)]
         for ((name, typ), init) in zip(decls, inits):
-            sym = scope.add_variable(
-                name, type = typ, site = stmt.site, init = init, stmt = True,
-                make_unique=not dml.globals.debuggable)
+            if not (name == '_' and stmt.site.dml_version() != (1, 2)):
+                sym = scope.add_variable(
+                    name, type = typ, site = stmt.site, init = init,
+                    stmt = True, make_unique=not dml.globals.debuggable)
+            else:
+                sym = mk_sym(name, typ)
+
             stmts.append(sym_declaration(sym))
 
     return stmts
@@ -2401,7 +2406,7 @@ def stmt_assign(stmt, location, scope):
 
         lscope = Symtab(scope)
         sym = lscope.add_variable(
-            'tmp', type=init_typ, site=init.site, init=init,
+            '_tmp', type=init_typ, site=init.site, init=init,
             stmt=True)
         init_expr = mkLocalVariable(init.site, sym)
         stmts = [sym_declaration(sym)]
@@ -2437,7 +2442,7 @@ def stmt_assign(stmt, location, scope):
             else:
                 init = eval_initializer(site, tgt.ctype(), src_ast, location,
                                         scope, False)
-                name = 'tmp%d' % (i,)
+                name = '_tmp%d' % (i,)
                 sym = lscope.add_variable(
                         name, type=tgt.ctype(), site=tgt.site, init=init,
                         stmt=True)
@@ -2930,6 +2935,9 @@ def stmt_afteronhook(stmt, location, scope):
 
     msg_comp_params = {}
     for (idx, (mcp_site, mcp_name)) in enumerate(msg_comp_param_asts):
+        if mcp_name == '_':
+            continue
+
         if mcp_name in msg_comp_params:
             raise EDVAR(mcp_site, msg_comp_params[mcp_name][1],
                         mcp_name)
@@ -3079,7 +3087,8 @@ def stmt_select(stmt, location, scope):
             clauses = []
             for it in l:
                 condscope = Symtab(scope)
-                condscope.add(ExpressionSymbol(itername, it, stmt.site))
+                if not (itername == '_' and stmt.site.dml_version() != (1, 2)):
+                    condscope.add(ExpressionSymbol(itername, it, stmt.site))
                 cond = as_bool(codegen_expression(
                     cond_ast, location, condscope))
                 if cond.constant and not cond.value:
@@ -3115,9 +3124,10 @@ def foreach_each_in(site, itername, trait, each_in,
                     body_ast, location, scope):
     inner_scope = Symtab(scope)
     trait_type = TTrait(trait)
-    inner_scope.add_variable(
-        itername, type=trait_type, site=site,
-        init=ForeachSequence.itervar_initializer(site, trait))
+    if itername != '_':
+        inner_scope.add_variable(
+            itername, type=trait_type, site=site,
+            init=ForeachSequence.itervar_initializer(site, trait))
     context = GotoLoopContext()
     with context:
         inner_body = mkCompound(site, declarations(inner_scope)
@@ -3198,8 +3208,9 @@ def foreach_constant_list(site, itername, lst, statement, location, scope):
                                    TInt(32, True))
                              for dim in range(len(items.dimsizes)))
             loopscope = Symtab(scope)
-            loopscope.add(ExpressionSymbol(
-                itername, items.expr(loopvars), site))
+            if not (itername == '_' and site.dml_version() != (1, 2)):
+                loopscope.add(ExpressionSymbol(
+                    itername, items.expr(loopvars), site))
             stmt = codegen_statement(statement, location, loopscope)
 
             if stmt.is_empty:
@@ -3584,6 +3595,7 @@ def codegen_inline(site, meth_node, indices, inargs, outargs,
             # call is safe.
             return codegen_call(site, meth_node, indices,
                                 inargs, outargs)
+        pre = []
         for (arg, (parmname, parmtype), argno) in zip(inargs, meth_node.inp,
                                                       list(range(len(inargs)))):
             # Create an alias
@@ -3604,7 +3616,12 @@ def codegen_inline(site, meth_node, indices, inargs, outargs,
                     raise ECONSTP(site, parmname, "method call")
                 arg = coerce_if_eint(arg)
 
-            if inhibit_copyin or undefined(arg):
+            if (parmname == '_'
+                and meth_node.astcode.site.dml_version() != (1, 2)):
+                if not arg.constant:
+                    pre.append(mkExpressionStatement(arg.site, arg,
+                                                     explicit_discard=True))
+            elif inhibit_copyin or undefined(arg):
                 param_scope.add(ExpressionSymbol(parmname, arg, arg.site))
             elif arg.constant and (
                     parmtype is None
@@ -3661,13 +3678,13 @@ def codegen_inline(site, meth_node, indices, inargs, outargs,
             exit_handler = GotoExit_dml14(outargs)
             with exit_handler:
                 code = codegen_statements(subs, location, param_scope)
-            decls = declarations(param_scope)
+            pre.extend(declarations(param_scope))
             post = ([mkLabel(site, exit_handler.label)]
                     if exit_handler.used else [])
-            body = mkCompound(site, decls + code, rbrace_site)
+            body = mkCompound(site, pre + code, rbrace_site)
             if meth_node.outp and body.control_flow().fallthrough:
                 report(ENORET(meth_node.astcode.site))
-            return mkInlinedMethod(site, meth_node, decls, code, post)
+            return mkInlinedMethod(site, meth_node, pre, code, post)
 
 def c_rettype(outp, throws):
     if throws:
@@ -3725,14 +3742,24 @@ class MethodFunc(object):
 
         # rettype is the return type of the C function
         self.rettype = c_rettype(outp, throws)
+        cparams = list(cparams)
+
+        if method.astcode.site.dml_version() != (1, 2):
+            discarded = 0
+            for (i, (n, t)) in enumerate(cparams):
+                if n == '_':
+                    cparams[i] = (f'_unused_{discarded}', t)
+                    discarded += 1
+
         self.cparams = c_inargs(
-            implicit_params(method) + list(cparams), outp, throws)
+            implicit_params(method) + cparams, outp, throws)
 
     @property
     def prototype(self):
         return self.rettype.declaration(
             "%s(%s)" % (self.get_cname(),
                         ", ".join([t.declaration(n)
+                                   + ' UNUSED'*n.startswith('_unused_')
                                    for (n, t) in self.cparams])))
 
     def cfunc_expr(self, site):
@@ -3826,7 +3853,9 @@ def codegen_method_func(func):
         if dml.globals.dml_version == (1, 2) and (
                 compat.dml12_misc not in dml.globals.enabled_compat):
             check_varname(method.site, name)
-        if isinstance(e, Expression):
+        if (isinstance(e, Expression)
+            and not (name == '_'
+                     and method.astcode.site.dml_version() != (1, 2))):
             inlined_arg = (
                 mkInlinedParam(method.site, e, name, e.ctype())
                 if defined(e) else e)
@@ -3881,7 +3910,9 @@ def codegen_method(site, inp, outp, throws, independent, memoization, ast,
     with (crep.DeviceInstanceContext() if not independent
           else contextlib.nullcontext()):
         for (arg, etype) in inp:
-            fnscope.add_variable(arg, type=etype, site=site, make_unique=False)
+            if not (arg == '_' and ast.site.dml_version() != (1, 2)):
+                fnscope.add_variable(arg, type=etype, site=site,
+                                     make_unique=False)
         initializers = [get_initializer(site, parmtype, None, None, None)
                         for (_, parmtype) in outp]
 

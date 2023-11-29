@@ -324,8 +324,15 @@ def mktrait(site, tname, ancestors, methods, params, sessions, hooks,
         del sessions[name]
 
     bad_methods = set()
-    for (name, (msite, inp, outp, throws, independent, startup, memoized, overridable,
-                body, rbrace_site)) in list(methods.items()):
+    for (name, (msite, inp, outp, throws, independent, startup, memoized,
+                overridable, body, rbrace_site)) in list(methods.items()):
+        argnames = set()
+        for (n, _) in inp:
+            if n in argnames:
+                report(EARGD(msite, n))
+                bad_methods.add(name)
+            if n != '_':
+                argnames.add(n)
         for ancestor in direct_parents:
             coll = ancestor.member_declaration(name)
             if coll:
